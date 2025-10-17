@@ -1,0 +1,43 @@
+{
+  "name": "rockola-electron-react-mvp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Rockola MVP: Electron + React + TS + ytdl-core + Spotify search",
+  "main": "electron/main.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron-tsx electron/main.ts\"",
+    "build": "vite build && tsup electron/main.ts electron/preload.ts --format cjs --dts --out-dir dist-electron",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "concurrently": "^9.1.0",
+    "dotenv": "^16.4.5",
+    "electron": "^31.3.1",
+    "electron-is-dev": "^3.0.1",
+    "express": "^4.19.2",
+    "music-metadata": "^10.5.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.9",
+    "ytdl-core": "^4.11.5",
+    "yt-search": "^2.12.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.20",
+    "cross-env": "^7.0.3",
+    "electron-tsx": "^0.9.0",
+    "eslint": "^8.57.0",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13",
+    "tsx": "^4.19.2",
+    "tsup": "^8.2.4",
+    "typescript": "^5.6.3",
+    "wait-on": "^8.0.1"
+  }
+}
