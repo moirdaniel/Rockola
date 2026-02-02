@@ -106,9 +106,10 @@ Sistema de escaneo de medios con seguimiento de cambios.
 ## 🏗 Compilación y Ejecución
 
 ### Prerrequisitos
-- Rust (cargo)
-- Node.js y npm/yarn
+- Rust (cargo) - Versión 1.70 o superior
+- Node.js y npm - Versión 18 o superior
 - Tauri CLI
+- Dependencias del sistema (WebKit2GTK, GTK3, OpenSSL, etc.)
 
 ### Configuración del Entorno
 
@@ -118,32 +119,35 @@ git clone https://github.com/moirdaniel/Rockola.git
 cd Rockola
 ```
 
-2. Instala las dependencias del frontend:
+2. Instala Rust y las dependencias del sistema:
+Sigue las instrucciones detalladas en el archivo [INSTALACION.md](./INSTALACION.md) para tu sistema operativo.
+
+3. Instala las dependencias del frontend:
 ```bash
 cd ui
 npm install
 ```
 
-3. Ejecuta la aplicación de desarrollo:
+4. Ejecuta la aplicación de desarrollo:
 ```bash
-# Para el frontend
+# En una terminal, iniciar el servidor de desarrollo del frontend
 cd ui
 npm run dev
 
-# Para la aplicación desktop
+# En otra terminal, iniciar la aplicación desktop
 cd apps/desktop
 cargo tauri dev
 ```
 
 ### Compilación para Producción
 ```bash
-# Frontend
+# Compilar el frontend
 cd ui
 npm run build
 
-# Aplicación desktop
-cd apps/desktop/src-tauri
-cargo build --release
+# Compilar la aplicación desktop
+cd apps/desktop
+cargo tauri build
 ```
 
 ---

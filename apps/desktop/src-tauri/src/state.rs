@@ -7,4 +7,3 @@ pub struct AppState {
     pub migrations_dir: PathBuf,
     pub media_port: u16,
 }
-

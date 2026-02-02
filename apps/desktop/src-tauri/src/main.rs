@@ -29,6 +29,11 @@ fn main() {
             // DB (core_db)
             // -------------------------
             let db = Db::new(db_path);
+            
+            // Inicializar la base de datos con migraciones
+            if let Err(e) = db.init(&migrations_dir) {
+                eprintln!("Error inicializando la base de datos: {:?}", e);
+            }
 
             // -------------------------
             // Media server HTTP
@@ -55,7 +60,9 @@ fn main() {
             commands::list_artists,
             commands::list_items_by_artist,
             commands::start_scan,
-            commands::get_media_port
+            commands::get_media_port,
+            commands::search_items,
+            commands::get_library_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
