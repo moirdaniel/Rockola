@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, State};
 
@@ -54,47 +56,86 @@ pub fn list_items_by_artist(
     Ok(rows)
 }
 
+/// Busca items por título o artista
+#[tauri::command]
+pub fn search_items(state: State<AppState>, query: String) -> Result<Vec<(i64, String, String, String, String)>, String> {
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| format!("{e:?}"))?;
+
+    let rows = core_db::Db::search_items(&conn, &query)
+        .map_err(|e| format!("{e:?}"))?;
+
+    Ok(rows)
+}
+
+/// Obtiene estadísticas generales de la biblioteca
+#[tauri::command]
+pub fn get_library_stats(state: State<AppState>) -> Result<(i64, i64, i64, i64, i64), String> {
+    let conn = state
+        .db
+        .connect()
+        .map_err(|e| format!("{e:?}"))?;
+
+    let stats = core_db::Db::get_library_stats(&conn)
+        .map_err(|e| format!("{e:?}"))?;
+
+    Ok(stats)
+}
+
 /// Inicia un scan.
 /// UI manda: { sourceId: number }
-/// Este comando NO usa event sink; solo dispara scan y retorna Ok.
 #[tauri::command]
 pub fn start_scan(app: AppHandle, state: State<AppState>, source_id: i64) -> Result<(), String> {
-    // Si tu core_scan requiere cosas extra, ajustamos, pero lo dejamos simple y robusto.
-    // La idea es: iniciar scan en background (thread/task) y opcionalmente emitir eventos.
-    // Por ahora, emitimos un evento "scan_started" y devolvemos Ok.
-
     let _ = app.emit("app_event", serde_json::json!({
         "type": "scan_started",
         "sourceId": source_id
     }));
 
-    // Ejecuta en background para no bloquear UI
-    let db = state.db.clone();
-    tauri::async_runtime::spawn(async move {
-        // Conecta
-        let conn = match db.connect() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("start_scan connect error: {e:?}");
-                return;
+    // Obtener la ruta de la fuente
+    let source_info = {
+        let conn = state.db.connect().map_err(|e| format!("{:?}", e))?;
+        core_db::Db::get_source_info(&conn, source_id).map_err(|e| format!("{:?}", e))?
+    };
+
+    if let Some((root_path, _, _, _)) = source_info {
+        let db = state.db.clone();
+        let app_handle = app.clone();
+        
+        tauri::async_runtime::spawn(async move {
+            let cancelled = AtomicBool::new(false);
+            let scanner = core_scan::Scanner::new(db);
+            
+            // Emitir evento de inicio
+            let _ = app_handle.emit("app_event", serde_json::json!({
+                "type": "scan_progress",
+                "payload": {
+                    "source_id": source_id,
+                    "processed": 0,
+                    "total": None,
+                    "phase": "starting",
+                    "current_path": Some("Iniciando escaneo..."),
+                    "progress_percent": Some(0.0)
+                }
+            }));
+
+            if let Err(e) = scanner.scan_source_with_cancel(source_id, &root_path, &EventSinkAdapter::new(app_handle), &cancelled) {
+                let _ = app_handle.emit("app_event", serde_json::json!({
+                    "type": "error",
+                    "payload": {
+                        "code": "SCAN_ERROR",
+                        "message": format!("Error durante el escaneo: {}", e),
+                        "context": None,
+                        "timestamp": time::OffsetDateTime::now_utc().unix_timestamp(),
+                        "severity": "error"
+                    }
+                }));
             }
-        };
-
-        // Si tienes core_scan::scan_source(...) o similar, llama acá.
-        // Como no tengo tu firma exacta, dejo placeholders seguros:
-        //
-        // match core_scan::scan_source(&conn, source_id) { ... }
-        //
-        // Por ahora, solo marcamos "scan_finished" para que UI no quede colgada.
-        let _ = conn; // evita warnings si aún no llamas scan
-
-        // Si quieres, más adelante lo conectamos al scanner real
-        // y emitimos progreso.
-        // eprintln!("scan running for source_id={source_id}");
-
-        // (event final)
-        // Nota: sin AppHandle aquí, no emitimos; si quieres, pasamos app.clone().
-    });
+        });
+    } else {
+        return Err("Source no encontrada".to_string());
+    }
 
     Ok(())
 }
@@ -105,7 +146,7 @@ pub fn get_media_port(state: State<AppState>) -> u16 {
     state.media_port
 }
 
-/// Abre un path con el handler del SO (opcional, por si quieres “abrir en VLC”)
+/// Abre un path con el handler del SO (opcional, por si quieres "abrir en VLC")
 #[tauri::command]
 pub fn open_in_system(full_path: String) -> Result<(), String> {
     // open_path espera Option<S> donde S: AsRef<str>.
@@ -114,4 +155,21 @@ pub fn open_in_system(full_path: String) -> Result<(), String> {
         .map_err(|e| format!("{e:?}"))?;
 
     Ok(())
+}
+
+/// Event sink adapter para conectar el scanner con los eventos de Tauri
+struct EventSinkAdapter {
+    app_handle: AppHandle,
+}
+
+impl EventSinkAdapter {
+    fn new(app_handle: AppHandle) -> Self {
+        Self { app_handle }
+    }
+}
+
+impl core_scan::EventSink for EventSinkAdapter {
+    fn emit(&self, event: core_events::AppEvent) {
+        let _ = self.app_handle.emit("app_event", event);
+    }
 }

@@ -81,17 +81,23 @@ export default function PlayerPanel(props: Props) {
   const [src, setSrc] = React.useState<string>("");
   const [srcLoading, setSrcLoading] = React.useState(false);
   const [mime, setMime] = React.useState<string>("");
+  const [isPlaying, setIsPlaying] = React.useState(false);
+  const [currentTime, setCurrentTime] = React.useState(0);
+  const [duration, setDuration] = React.useState(0);
+  const [volume, setVolume] = React.useState(1);
 
   // Cargar src cuando cambia nowPlaying
   React.useEffect(() => {
     let alive = true;
 
     async function load() {
-
-     const port = await getMediaPort();
+      const port = await getMediaPort();
 
       if (!nowPlaying) {
         setSrc("");
+        setIsPlaying(false);
+        setCurrentTime(0);
+        setDuration(0);
         return;
       }
 
@@ -102,22 +108,17 @@ export default function PlayerPanel(props: Props) {
     
       const encoded = encodeURIComponent(nowPlaying.fullPath);
       const httpSrc = `http://127.0.0.1:${port}/media?path=${encoded}`;
-        setSrc(httpSrc);
-        setMime(guessMime(nowPlaying.fullPath, nowPlaying.mediaType));
+      
+      setSrc(httpSrc);
+      setMime(guessMime(nowPlaying.fullPath, nowPlaying.mediaType));
 
       if (!alive) return;
 
       console.log("🎬 resolved src:", s);
 
-
-    //   setSrc(s);
-    //   setMime(guessMime(nowPlaying.fullPath, nowPlaying.mediaType));
-      setSrcLoading(false);
-
-        console.log("🧪 isTauriRuntime:", isTauriRuntime());
-        console.log("🎬 fullPath:", nowPlaying.fullPath);
-        console.log("🎬 resolved src:", s);
-
+      console.log("🧪 isTauriRuntime:", isTauriRuntime());
+      console.log("🎬 fullPath:", nowPlaying.fullPath);
+      console.log("🎬 resolved src:", s);
     }
 
     void load();
@@ -128,24 +129,56 @@ export default function PlayerPanel(props: Props) {
 
   // Cuando cambia src, intentar play()
   React.useEffect(() => {
-  const el = mediaRef.current;
-  if (!el || !src) return;
+    const el = mediaRef.current;
+    if (!el || !src) return;
 
-  try {
-    // cuando usas <source>, necesitas load()
-    (el as any).load?.();
+    try {
+      // cuando usas <source>, necesitas load()
+      (el as any).load?.();
 
-    const p = (el as any).play?.();
-    if (p && typeof p.then === "function") {
-      p.catch((err: any) => {
-        console.warn("⚠️ play() falló:", err);
-      });
+      const p = (el as any).play?.();
+      if (p && typeof p.then === "function") {
+        p.catch((err: any) => {
+          console.warn("⚠️ play() falló:", err);
+        });
+      }
+    } catch (e) {
+      console.warn("⚠️ load/play exception:", e);
     }
-  } catch (e) {
-    console.warn("⚠️ load/play exception:", e);
-  }
-}, [src, mime]);
+  }, [src, mime]);
 
+  // Actualizar tiempo de reproducción
+  const updateTime = () => {
+    const el = mediaRef.current;
+    if (el) {
+      setCurrentTime(el.currentTime);
+      setDuration(el.duration);
+    }
+  };
+
+  // Eventos de control de reproducción
+  const handlePlay = () => setIsPlaying(true);
+  const handlePause = () => setIsPlaying(false);
+  const handleTimeUpdate = () => updateTime();
+  const handleLoadedMetadata = () => updateTime();
+
+  // Control de volumen
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newVolume = parseFloat(e.target.value);
+    setVolume(newVolume);
+    if (mediaRef.current) {
+      mediaRef.current.volume = newVolume;
+    }
+  };
+
+  // Control de tiempo
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newTime = parseFloat(e.target.value);
+    setCurrentTime(newTime);
+    if (mediaRef.current) {
+      mediaRef.current.currentTime = newTime;
+    }
+  };
 
   // Fullscreen helpers
   function requestFs() {
@@ -156,48 +189,46 @@ export default function PlayerPanel(props: Props) {
   }
 
   function exitFs() {
-  const doc: any = document;
-  const isFs = !!(doc.fullscreenElement || doc.webkitFullscreenElement);
-  
-  if (!isFs)
-     return; 
+    const doc: any = document;
+    const isFs = !!(doc.fullscreenElement || doc.webkitFullscreenElement);
+    
+    if (!isFs) return; 
 
-  const fn = doc.exitFullscreen || doc.webkitExitFullscreen;
-  if (fn) fn.call(document);
-}
-
-function getExt(path: string): string {
-  const m = path.toLowerCase().match(/\.([a-z0-9]+)$/);
-  return m?.[1] ?? "";
-}
-
-function guessMime(path: string, mediaType: "video" | "audio"): string {
-  const ext = getExt(path);
-
-  // video
-  if (mediaType === "video") {
-    if (ext === "mp4" || ext === "m4v") return "video/mp4";
-    if (ext === "webm") return "video/webm";
-    if (ext === "mkv") return "video/x-matroska"; // a veces no lo soporta WebKit igual
-    return "video/mp4"; // fallback razonable
+    const fn = doc.exitFullscreen || doc.webkitExitFullscreen;
+    if (fn) fn.call(document);
   }
 
-  // audio
-  if (ext === "mp3") return "audio/mpeg";
-  if (ext === "m4a" || ext === "mp4") return "audio/mp4";
-  if (ext === "ogg") return "audio/ogg";
-  if (ext === "wav") return "audio/wav";
-  return "audio/mpeg";
-}
+  function getExt(path: string): string {
+    const m = path.toLowerCase().match(/\.([a-z0-9]+)$/);
+    return m?.[1] ?? "";
+  }
 
+  function guessMime(path: string, mediaType: "video" | "audio"): string {
+    const ext = getExt(path);
+
+    // video
+    if (mediaType === "video") {
+      if (ext === "mp4" || ext === "m4v") return "video/mp4";
+      if (ext === "webm") return "video/webm";
+      if (ext === "mkv") return "video/x-matroska"; // a veces no lo soporta WebKit igual
+      return "video/mp4"; // fallback razonable
+    }
+
+    // audio
+    if (ext === "mp3") return "audio/mpeg";
+    if (ext === "m4a" || ext === "mp4") return "audio/mp4";
+    if (ext === "ogg") return "audio/ogg";
+    if (ext === "wav") return "audio/wav";
+    return "audio/mpeg";
+  }
 
   // Sync con estado externo
   React.useEffect(() => {
     try {
-        if (isFullscreen) requestFs();
-        else exitFs();
+      if (isFullscreen) requestFs();
+      else exitFs();
     } catch (e) {
-        console.warn("fullscreen sync error:", e);
+      console.warn("fullscreen sync error:", e);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFullscreen]);
@@ -205,12 +236,24 @@ function guessMime(path: string, mediaType: "video" | "audio"): string {
   const showVideo = nowPlaying?.mediaType === "video";
   const showAudio = nowPlaying?.mediaType === "audio";
 
+  // Formatear tiempo
+  const formatTime = (seconds: number) => {
+    if (isNaN(seconds)) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
   return (
     <div className="card player-card" ref={containerRef}>
       <div className="player-head">
         <div>
-          <div className="card-title">Reproducción</div>
-          <div className="muted">Now playing</div>
+          <div className="card-title">
+            {nowPlaying ? '🎬 Reproduciendo' : pending ? '⏰ Programado' : '🎬 Reproducción'}
+          </div>
+          <div className="muted">
+            {nowPlaying ? 'Now playing' : pending ? 'Pending start' : 'Select item to play'}
+          </div>
         </div>
 
         <div className="player-actions">
@@ -218,7 +261,7 @@ function guessMime(path: string, mediaType: "video" | "audio"): string {
             className="btn"
             onClick={() => (isFullscreen ? onExitFullscreen() : onRequestFullscreen())}
           >
-            {isFullscreen ? "Salir Fullscreen" : "Fullscreen"}
+            {isFullscreen ? "⏹️ Exit Fullscreen" : "📺 Fullscreen"}
           </button>
         </div>
       </div>
@@ -227,32 +270,36 @@ function guessMime(path: string, mediaType: "video" | "audio"): string {
         {pending && (
           <div className="pending-banner">
             <div className="pending-title">
-              Iniciando en <b>{pendingSecondsLeft}s</b> — {pending.artistName} — {pending.title}
+              🎵 Iniciando en <b>{pendingSecondsLeft}s</b> — {pending.artistName} — {pending.title}
             </div>
             <div className="pending-actions">
               <button className="btn btn-primary" onClick={onPlayNow}>
-                Reproducir ahora
+                ▶️ Reproducir ahora
               </button>
               <button className="btn" onClick={onCancelPending}>
-                Cancelar
+                ❌ Cancelar
               </button>
             </div>
           </div>
         )}
 
         {!nowPlaying && !pending && (
-          <div className="muted" style={{ marginTop: 8 }}>
-            Selecciona un item de la cola para reproducir.
+          <div className="muted" style={{ marginTop: 8, textAlign: 'center', padding: '2rem 0' }}>
+            🔍 Selecciona un item de la cola para reproducir.
           </div>
         )}
 
-        {srcLoading && <div className="muted" style={{ marginTop: 8 }}>Cargando media…</div>}
+        {srcLoading && (
+          <div className="muted" style={{ marginTop: 8, textAlign: 'center', padding: '2rem 0' }}>
+            🔄 Cargando media…
+          </div>
+        )}
 
         {!!nowPlaying && (
           <>
             {!src && (
               <div className="muted" style={{ marginTop: 8 }}>
-                No se pudo resolver el src. (Revisa assetProtocol/scope en tauri.conf.json)
+                ⚠️ No se pudo resolver el src. (Revisa assetProtocol/scope en tauri.conf.json)
               </div>
             )}
 
@@ -260,41 +307,79 @@ function guessMime(path: string, mediaType: "video" | "audio"): string {
               <div className="media-wrap">
                 {showVideo && (
                   <video
-                        ref={(r) => {
-                            mediaRef.current = r;
-                        }}
-                        className="media"
-                        controls
-                        playsInline
-                        preload="auto"
-                        onError={() => {
-                            const el = mediaRef.current as HTMLVideoElement | null;
-                            console.error("🎥 <video> error:", el?.error);
-                        }}
-                        onCanPlay={() => console.log("🎥 canplay")}
-                        >
-                        <source src={src} type={mime || "video/mp4"} />
-                    </video>
-
+                    ref={(r) => {
+                      mediaRef.current = r;
+                    }}
+                    className="media"
+                    controls={false}
+                    playsInline
+                    preload="auto"
+                    onPlay={handlePlay}
+                    onPause={handlePause}
+                    onTimeUpdate={handleTimeUpdate}
+                    onLoadedMetadata={handleLoadedMetadata}
+                    onError={() => {
+                      const el = mediaRef.current as HTMLVideoElement | null;
+                      console.error("🎥 <video> error:", el?.error);
+                    }}
+                    onCanPlay={() => console.log("🎥 canplay")}
+                  >
+                    <source src={src} type={mime || "video/mp4"} />
+                  </video>
                 )}
 
                 {showAudio && (
-                 <audio
-                    ref={(r) => {
+                  <div style={{ marginBottom: '1rem' }}>
+                    <audio
+                      ref={(r) => {
                         mediaRef.current = r;
-                    }}
-                    className="media-audio"
-                    controls
-                    preload="auto"
-                    onError={() => {
+                      }}
+                      controls={false}
+                      preload="auto"
+                      onPlay={handlePlay}
+                      onPause={handlePause}
+                      onTimeUpdate={handleTimeUpdate}
+                      onLoadedMetadata={handleLoadedMetadata}
+                      onError={() => {
                         const el = mediaRef.current as HTMLAudioElement | null;
                         console.error("🎧 <audio> error:", el?.error);
-                    }}
-                    onCanPlay={() => console.log("🎧 canplay")}
+                      }}
+                      onCanPlay={() => console.log("🎧 canplay")}
                     >
-                    <source src={src} type={mime || "audio/mpeg"} />
-                  </audio>
-
+                      <source src={src} type={mime || "audio/mpeg"} />
+                    </audio>
+                    
+                    {/* Visualización de audio */}
+                    <div style={{
+                      height: '40px',
+                      background: 'linear-gradient(90deg, #1e1e1e, #2d2d2d)',
+                      borderRadius: '4px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      margin: '1rem 0'
+                    }}>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'flex-end',
+                        height: '24px',
+                        gap: '1px'
+                      }}>
+                        {Array.from({ length: 32 }).map((_, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              width: '2px',
+                              height: `${Math.random() * 20 + 5}px`,
+                              backgroundColor: isPlaying ? '#ff6b35' : '#b3b3b3',
+                              opacity: isPlaying ? 0.8 : 0.4,
+                              transition: 'all 0.1s ease'
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 )}
 
                 <div className="nowplaying-meta">
@@ -302,7 +387,114 @@ function guessMime(path: string, mediaType: "video" | "audio"): string {
                     {nowPlaying.artistName} — {nowPlaying.title}
                   </div>
                   <div className="muted">
-                    {nowPlaying.mediaType} • {nowPlaying.fullPath}
+                    {nowPlaying.mediaType === 'video' ? '🎥 Video' : '🎵 Audio'} • {nowPlaying.fullPath}
+                  </div>
+                  
+                  {/* Controles de reproducción */}
+                  <div style={{ marginTop: '1rem' }}>
+                    {/* Barra de progreso */}
+                    <div style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '0.5rem',
+                      marginBottom: '0.5rem'
+                    }}>
+                      <span style={{ fontSize: '0.8em', minWidth: '40px' }}>
+                        {formatTime(currentTime)}
+                      </span>
+                      <input
+                        type="range"
+                        min="0"
+                        max={duration || 100}
+                        value={currentTime}
+                        onChange={handleSeek}
+                        style={{ 
+                          flex: 1, 
+                          height: '4px', 
+                          background: 'rgba(255,255,255,0.2)', 
+                          borderRadius: '2px',
+                          outline: 'none'
+                        }}
+                      />
+                      <span style={{ fontSize: '0.8em', minWidth: '40px' }}>
+                        {formatTime(duration)}
+                      </span>
+                    </div>
+                    
+                    {/* Controles de reproducción */}
+                    <div style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '0.5rem',
+                      marginBottom: '0.5rem'
+                    }}>
+                      <button 
+                        className="btn" 
+                        onClick={() => {
+                          if (mediaRef.current) {
+                            mediaRef.current.currentTime -= 10;
+                          }
+                        }}
+                        title="Rebobinar 10s"
+                      >
+                        ⏪
+                      </button>
+                      
+                      <button 
+                        className="btn" 
+                        onClick={() => {
+                          if (mediaRef.current) {
+                            if (mediaRef.current.paused) {
+                              mediaRef.current.play();
+                            } else {
+                              mediaRef.current.pause();
+                            }
+                          }
+                        }}
+                        title={isPlaying ? "Pausar" : "Reproducir"}
+                      >
+                        {isPlaying ? '⏸️' : '▶️'}
+                      </button>
+                      
+                      <button 
+                        className="btn" 
+                        onClick={() => {
+                          if (mediaRef.current) {
+                            mediaRef.current.currentTime += 10;
+                          }
+                        }}
+                        title="Avanzar 10s"
+                      >
+                        ⏩
+                      </button>
+                    </div>
+                    
+                    {/* Control de volumen */}
+                    <div style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '0.5rem'
+                    }}>
+                      <span style={{ fontSize: '0.8em' }}>🔊</span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        value={volume}
+                        onChange={handleVolumeChange}
+                        style={{ 
+                          flex: 1, 
+                          height: '4px', 
+                          background: 'rgba(255,255,255,0.2)', 
+                          borderRadius: '2px',
+                          outline: 'none'
+                        }}
+                      />
+                      <span style={{ fontSize: '0.8em', minWidth: '30px' }}>
+                        {Math.round(volume * 100)}%
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -310,7 +502,11 @@ function guessMime(path: string, mediaType: "video" | "audio"): string {
           </>
         )}
 
-        {statusText && <div className="muted" style={{ marginTop: 10 }}>{statusText}</div>}
+        {statusText && (
+          <div className="muted" style={{ marginTop: 10, fontSize: '0.9em' }}>
+            {statusText}
+          </div>
+        )}
       </div>
     </div>
   );

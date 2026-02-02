@@ -16,21 +16,26 @@ export default function AppShell() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    Settings.setTheme(theme);
-  }, [theme]);
-
-  useEffect(() => {
     document.documentElement.style.fontSize = `${16 * scale}px`;
+    Settings.setTheme(theme);
     Settings.setScale(scale);
-  }, [scale]);
+  }, [theme, scale]);
 
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
+
+  // Manejar el evento de abrir configuración desde el catálogo
+  useEffect(() => {
+    const handleOpenSettings = () => setSettingsOpen(true);
+    window.addEventListener("open-settings", handleOpenSettings);
+    
+    return () => window.removeEventListener("open-settings", handleOpenSettings);
+  }, []);
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <div className="title">Rockola</div>
+          <div className="title">🎵 Rockola</div>
           <div className="sub">Desktop • Tauri</div>
         </div>
 
@@ -38,11 +43,11 @@ export default function AppShell() {
           {topbarActions}
 
           <button className="btn" onClick={() => setSettingsOpen(true)}>
-            ⚙ Configuración
+            ⚙️ Configuración
           </button>
 
           <button className="btn" onClick={toggleTheme}>
-            {theme === "dark" ? "🌙 Oscuro" : "☀️ Claro"}
+            {theme === "dark" ? "☀️ Claro" : "🌙 Oscuro"}
           </button>
         </div>
       </header>

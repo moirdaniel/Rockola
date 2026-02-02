@@ -19,6 +19,7 @@ export default function CatalogPage({ sourcePath, setTopbarActions }: Props) {
   const [artists, setArtists] = React.useState<Artist[]>([]);
   const [artistFilter, setArtistFilter] = React.useState("");
   const [loadingArtists, setLoadingArtists] = React.useState(false);
+  const [loadingItems, setLoadingItems] = React.useState(false);
 
   const [queue, setQueue] = React.useState<QueueItem[]>([]);
   const [nowPlaying, setNowPlaying] = React.useState<QueueItem | null>(null);
@@ -75,10 +76,13 @@ export default function CatalogPage({ sourcePath, setTopbarActions }: Props) {
       if (!sp) return;
       if (!isTauri()) return;
 
+      setLoadingArtists(true);
       await startScan(sp);
       await refreshArtists();
     } catch (e) {
       console.error("[CatalogPage] runScan failed:", e);
+    } finally {
+      setLoadingArtists(false);
     }
   }, [sourcePath, refreshArtists]);
 
@@ -132,6 +136,23 @@ export default function CatalogPage({ sourcePath, setTopbarActions }: Props) {
     setNowPlaying((n) => (n?.fullPath === fullPath ? null : n));
   }
 
+  // Clear entire queue
+  function clearQueue() {
+    setQueue([]);
+    setPending(null);
+    setPendingLeft(AUTOSTART_SECONDS);
+  }
+
+  // ===== Queue management =====
+  function moveQueueItem(fromIndex: number, toIndex: number) {
+    setQueue(prev => {
+      const newQueue = [...prev];
+      const [movedItem] = newQueue.splice(fromIndex, 1);
+      newQueue.splice(toIndex, 0, movedItem);
+      return newQueue;
+    });
+  }
+
   // ===== Pending start logic =====
   function schedulePlay(q: QueueItem) {
     // set pending + countdown
@@ -177,7 +198,7 @@ export default function CatalogPage({ sourcePath, setTopbarActions }: Props) {
     resetIdleTimer(true);
   }
 
-  // Cuando countdown llega a 0 -> playNow
+  // When countdown reaches 0 -> playNow
   React.useEffect(() => {
     if (!pending) return;
     if (pendingLeft > 0) return;
@@ -204,10 +225,10 @@ export default function CatalogPage({ sourcePath, setTopbarActions }: Props) {
     }, AUTO_FULLSCREEN_IDLE_SECONDS * 1000);
   }
 
-  // Registrar actividad global (mouse/teclado) para resetear idle
+  // Register global activity (mouse/keyboard) to reset idle
   React.useEffect(() => {
     const onActivity = () => {
-      // Si el usuario está interactuando, evitamos “autofullscreen”
+      // If user is interacting, avoid "autofullscreen"
       resetIdleTimer(true);
     };
 
@@ -227,7 +248,7 @@ export default function CatalogPage({ sourcePath, setTopbarActions }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nowPlaying, isFullscreen]);
 
-  // Si termina la reproducción (nowPlaying null), salimos de fullscreen y limpiamos timers
+  // If playback ends (nowPlaying null), exit fullscreen and clear timers
   React.useEffect(() => {
     if (!nowPlaying) {
       clearIdleTimer();
@@ -238,7 +259,7 @@ export default function CatalogPage({ sourcePath, setTopbarActions }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nowPlaying]);
 
-  // ===== Click en cola: selecciona y programa countdown =====
+  // ===== Click on queue: select and schedule countdown =====
   function selectQueueItem(q: QueueItem) {
     schedulePlay(q);
   }
@@ -256,7 +277,18 @@ export default function CatalogPage({ sourcePath, setTopbarActions }: Props) {
   React.useEffect(() => {
     setTopbarActions(
       <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-        <button className="btn" onClick={playNextFromQueue}>Siguiente</button>
+        <button className="btn" onClick={playNextFromQueue} disabled={queue.length === 0}>
+          ▶️ Siguiente
+        </button>
+
+        <button 
+          className="btn" 
+          onClick={clearQueue} 
+          disabled={queue.length === 0}
+          style={{ backgroundColor: '#f44336', color: 'white' }}
+        >
+          🗑 Limpiar cola
+        </button>
 
         <button
           className="btn"
@@ -265,29 +297,29 @@ export default function CatalogPage({ sourcePath, setTopbarActions }: Props) {
             window.dispatchEvent(new CustomEvent("open-settings"));
           }}
         >
-          Configuración
+          ⚙️ Configuración
         </button>
 
         <button className="btn" onClick={() => setDark((v) => !v)}>
-          {dark ? "Oscuro" : "Claro"}
+          {dark ? '☀️ Claro' : '🌙 Oscuro'}
         </button>
 
         {isTauri() && (
-          <button className="btn" onClick={() => void runScan()}>
-            Scan biblioteca
+          <button className="btn" onClick={() => void runScan()} disabled={loadingArtists}>
+            {loadingArtists ? '🔄 Escaneando...' : '🔍 Scan biblioteca'}
           </button>
         )}
       </div>
     );
 
     return () => setTopbarActions(null);
-  }, [setTopbarActions, dark, runScan]);
+  }, [setTopbarActions, dark, runScan, loadingArtists, queue.length]);
 
   // ===== Render =====
   return (
     <div className={`catalog ${dark ? "theme-dark" : "theme-light"}`}>
       <div className="grid">
-        {/* LEFT */}
+        {/* LEFT PANEL - Artists and Library */}
         <section className="panel panel-left">
           <div className="card">
             <input
@@ -295,29 +327,45 @@ export default function CatalogPage({ sourcePath, setTopbarActions }: Props) {
               placeholder="Buscar artista..."
               value={artistFilter}
               onChange={(e) => setArtistFilter(e.target.value)}
+              autoFocus
             />
             <div className="muted" style={{ marginTop: 8 }}>
-              Source: {sourcePath || "—"}
+              📍 Source: {sourcePath || "No configurado"}
             </div>
 
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <button className="btn" disabled={loadingArtists} onClick={() => void refreshArtists()}>
-                {loadingArtists ? "Cargando..." : "Refresh"}
+              <button 
+                className="btn" 
+                disabled={loadingArtists} 
+                onClick={() => void refreshArtists()}
+              >
+                {loadingArtists ? "🔄 Cargando..." : "🔄 Refresh"}
               </button>
+              
+              <div style={{ marginLeft: 'auto', fontSize: '0.9em', fontWeight: 'bold' }}>
+                🎵 {artists.length} artistas
+              </div>
             </div>
           </div>
 
-          <div className="card panel-scroll" style={{ marginTop: 12 }}>
-            <div className="card-title">Artistas ({filteredArtists.length})</div>
+          <div className="card panel-scroll" style={{ marginTop: 12, minHeight: '300px' }}>
+            <div className="card-title">
+              🎤 Artistas ({filteredArtists.length})
+            </div>
 
             {filteredArtists.length === 0 ? (
-              <div className="muted" style={{ marginTop: 8 }}>
-                Sin resultados.
+              <div className="muted" style={{ marginTop: 8, textAlign: 'center', padding: '2rem 0' }}>
+                {loadingArtists ? 'Cargando artistas...' : 'Sin resultados. Intenta con otra búsqueda.'}
               </div>
             ) : (
               <div className="list chips">
                 {filteredArtists.map((a) => (
-                  <button key={a.id} className="chip" onClick={() => void openArtist(a)}>
+                  <button 
+                    key={a.id} 
+                    className="chip" 
+                    onClick={() => void openArtist(a)}
+                    title={`Ver ${a.displayName}`}
+                  >
                     {a.displayName}
                   </button>
                 ))}
@@ -326,7 +374,7 @@ export default function CatalogPage({ sourcePath, setTopbarActions }: Props) {
           </div>
         </section>
 
-        {/* RIGHT */}
+        {/* RIGHT PANEL - Player and Queue */}
         <section className="panel panel-right">
           <PlayerPanel
             nowPlaying={nowPlaying}
@@ -337,33 +385,78 @@ export default function CatalogPage({ sourcePath, setTopbarActions }: Props) {
             isFullscreen={isFullscreen}
             onRequestFullscreen={() => setIsFullscreen(true)}
             onExitFullscreen={() => setIsFullscreen(false)}
-            statusText={`Auto-start: ${AUTOSTART_SECONDS}s • Auto-fullscreen idle: ${AUTO_FULLSCREEN_IDLE_SECONDS}s`}
+            statusText={`⏱️ Auto-start: ${AUTOSTART_SECONDS}s • 🖥️ Auto-fullscreen idle: ${AUTO_FULLSCREEN_IDLE_SECONDS}s`}
           />
 
           <div className="card" style={{ marginTop: 12 }}>
-            <div className="card-title">Cola ({queue.length})</div>
-            <div className="muted">Click en un item para programar reproducción (10s).</div>
+            <div className="card-title">
+              🎧 Cola ({queue.length})
+            </div>
+            <div className="muted">
+              👆 Click en un item para programar reproducción ({AUTOSTART_SECONDS}s).
+            </div>
 
             <div className="panel-scroll" style={{ marginTop: 10, maxHeight: 320 }}>
               {queue.length === 0 ? (
-                <div className="muted">Vacía.</div>
+                <div className="muted" style={{ textAlign: 'center', padding: '1rem 0' }}>
+                  Cola vacía. Agrega medios desde los artistas.
+                </div>
               ) : (
-                <div className="queue grid-2">
-                  {queue.map((q) => (
-                    <div key={q.fullPath} className="queue-row">
-                      <button className="queue-pick" onClick={() => selectQueueItem(q)}>
-                        <div className="queue-title">{q.artistName} — {q.title}</div>
-                        <div className="muted">{q.mediaType}</div>
+                <div className="queue">
+                  {queue.map((q, index) => (
+                    <div key={`${q.fullPath}-${index}`} className="queue-row">
+                      <button 
+                        className="queue-pick" 
+                        onClick={() => selectQueueItem(q)}
+                        title={`Programar: ${q.artistName} - ${q.title}`}
+                      >
+                        <div className="queue-title">
+                          <span style={{ marginRight: '0.5rem' }}>
+                            {index === 0 ? '▶️' : index === 1 ? '2️⃣' : index === 2 ? '3️⃣' : ` ${index + 1}`}
+                          </span>
+                          {q.artistName} — {q.title}
+                        </div>
+                        <div className="muted">
+                          {q.mediaType === 'video' ? '🎥' : '🎵'} {q.mediaType}
+                        </div>
                       </button>
 
-                      <button className="btn" onClick={() => removeFromQueue(q.fullPath)}>
-                        Quitar
-                      </button>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button 
+                          className="btn" 
+                          onClick={() => removeFromQueue(q.fullPath)}
+                          style={{ padding: '0.25rem 0.5rem', fontSize: '0.8em' }}
+                        >
+                          🗑️
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
               )}
             </div>
+            
+            {queue.length > 0 && (
+              <div style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center', 
+                marginTop: '1rem',
+                paddingTop: '1rem',
+                borderTop: '1px solid rgba(255,255,255,0.1)'
+              }}>
+                <div className="muted">
+                  Total: {queue.length} tracks
+                </div>
+                <button 
+                  className="btn" 
+                  onClick={clearQueue}
+                  style={{ padding: '0.25rem 0.75rem', fontSize: '0.9em' }}
+                >
+                  Limpiar cola
+                </button>
+              </div>
+            )}
           </div>
         </section>
       </div>

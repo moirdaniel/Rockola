@@ -6,6 +6,7 @@
 //! - Inicializar la DB y aplicar migraciones desde `core/db/migrations/*.sql`.
 //! - Proveer helpers de escritura (upsert) para `sources`, `artists`, `media_items`.
 //! - Proveer queries mínimas para UI (listar artistas, listar items por artista).
+//! - Soporte para búsquedas avanzadas, estadísticas y mantenimiento.
 //!
 //! ## Notas técnicas
 //! - `rusqlite::Connection::transaction()` requiere `&mut Connection`.
@@ -56,6 +57,9 @@ impl Db {
         }
         let conn = Connection::open(&self.path)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "cache_size", 10000)?;
         Ok(conn)
     }
 
@@ -170,6 +174,31 @@ impl Db {
         Ok(())
     }
 
+    /// Obtiene información detallada de una fuente
+    pub fn get_source_info(conn: &Connection, source_id: i64) -> DbResult<Option<(String, String, Option<i64>, String)>> {
+        let mut stmt = conn.prepare(
+            "SELECT root_path, status, last_scan_at, last_seen_at FROM sources WHERE id = ?1"
+        )?;
+        let result = stmt.query_row([source_id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?.unwrap_or_default(),
+            ))
+        }).optional()?;
+        Ok(result)
+    }
+
+    /// Lista todas las fuentes
+    pub fn list_sources(conn: &Connection) -> DbResult<Vec<(i64, String, String, Option<i64>)>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, root_path, status, last_scan_at FROM sources ORDER BY root_path"
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
     // =========================================================
     // ARTISTS
     // =========================================================
@@ -192,6 +221,24 @@ impl Db {
             |r| r.get(0),
         )?;
         Ok(id)
+    }
+
+    /// Obtiene estadísticas de un artista
+    pub fn get_artist_stats(conn: &Connection, artist_id: i64) -> DbResult<(i64, i64, i64)> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT 
+                COUNT(*) as total_items,
+                SUM(CASE WHEN media_type = 'audio' THEN 1 ELSE 0 END) as audio_count,
+                SUM(CASE WHEN media_type = 'video' THEN 1 ELSE 0 END) as video_count
+            FROM media_items 
+            WHERE artist_id = ?1 AND status = 'active'
+            "#
+        )?;
+        let (total_items, audio_count, video_count): (i64, i64, i64) = stmt.query_row([artist_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+        Ok((total_items, audio_count, video_count))
     }
 
     // =========================================================
@@ -303,6 +350,152 @@ impl Db {
 
         tx.commit()?;
         Ok(changed)
+    }
+
+    /// Busca items por título o artista
+    pub fn search_items(conn: &Connection, query: &str) -> DbResult<Vec<(i64, String, String, String, String)>> {
+        let search_term = format!("%{}%", query.to_lowercase());
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT 
+                mi.id, 
+                a.display_name, 
+                mi.title, 
+                mi.full_path, 
+                mi.media_type
+            FROM media_items mi
+            JOIN artists a ON mi.artist_id = a.id
+            WHERE mi.status = 'active'
+            AND (
+                LOWER(mi.title) LIKE ?1 
+                OR LOWER(a.display_name) LIKE ?1
+            )
+            ORDER BY a.display_name, mi.title
+            LIMIT 100
+            "#
+        )?;
+        let rows = stmt.query_map([search_term], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
+
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    /// Obtiene un item por ID
+    pub fn get_item_by_id(conn: &Connection, item_id: i64) -> DbResult<Option<(i64, String, String, String, String, Option<i64>)>> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT 
+                mi.id,
+                a.display_name,
+                mi.title,
+                mi.full_path,
+                mi.media_type,
+                mi.duration_ms
+            FROM media_items mi
+            JOIN artists a ON mi.artist_id = a.id
+            WHERE mi.id = ?1
+            "#
+        )?;
+        let result = stmt.query_row([item_id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        }).optional()?;
+        Ok(result)
+    }
+
+    /// Obtiene estadísticas generales de la biblioteca
+    pub fn get_library_stats(conn: &Connection) -> DbResult<(i64, i64, i64, i64, i64)> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT 
+                COUNT(*) as total_items,
+                COUNT(DISTINCT artist_id) as total_artists,
+                SUM(CASE WHEN media_type = 'audio' THEN 1 ELSE 0 END) as audio_count,
+                SUM(CASE WHEN media_type = 'video' THEN 1 ELSE 0 END) as video_count,
+                SUM(size_bytes) as total_size
+            FROM media_items 
+            WHERE status = 'active'
+            "#
+        )?;
+        let (total_items, total_artists, audio_count, video_count, total_size): (i64, i64, i64, i64, i64) = stmt.query_row([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        })?;
+        Ok((total_items, total_artists, audio_count, video_count, total_size))
+    }
+
+    /// Obtiene los últimos items agregados
+    pub fn get_recent_items(conn: &Connection, limit: i64) -> DbResult<Vec<(i64, String, String, String, String)>> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT 
+                mi.id,
+                a.display_name,
+                mi.title,
+                mi.full_path,
+                mi.media_type
+            FROM media_items mi
+            JOIN artists a ON mi.artist_id = a.id
+            WHERE mi.status = 'active'
+            ORDER BY mi.created_at DESC
+            LIMIT ?1
+            "#
+        )?;
+        let rows = stmt.query_map([limit], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
+
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    /// Obtiene items aleatorios
+    pub fn get_random_items(conn: &Connection, limit: i64) -> DbResult<Vec<(i64, String, String, String, String)>> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT 
+                mi.id,
+                a.display_name,
+                mi.title,
+                mi.full_path,
+                mi.media_type
+            FROM media_items mi
+            JOIN artists a ON mi.artist_id = a.id
+            WHERE mi.status = 'active'
+            ORDER BY RANDOM()
+            LIMIT ?1
+            "#
+        )?;
+        let rows = stmt.query_map([limit], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
+
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    // =========================================================
+    // MANTENIMIENTO
+    // =========================================================
+
+    /// Elimina items marcados como 'missing' después de un período de tiempo
+    pub fn cleanup_missing_items(conn: &Connection, days_threshold: i64) -> DbResult<u64> {
+        let cutoff_time = unix_now() - (days_threshold * 24 * 60 * 60);
+        let deleted_count = conn.execute(
+            "DELETE FROM media_items WHERE status = 'missing' AND updated_at < ?1",
+            [cutoff_time],
+        )?;
+        Ok(deleted_count as u64)
+    }
+
+    /// Optimiza la base de datos
+    pub fn optimize_database(conn: &Connection) -> DbResult<()> {
+        conn.execute_batch("VACUUM; ANALYZE;")?;
+        Ok(())
     }
 
     // =========================================================
