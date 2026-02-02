@@ -13,3 +13,6 @@ Thumbs.db
 /.vscode
 coverage/
 *.log
+# Rust build artifacts
+/target/
+**/target/
