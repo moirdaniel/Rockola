@@ -175,7 +175,7 @@ impl Db {
     }
 
     /// Obtiene información detallada de una fuente
-    pub fn get_source_info(conn: &Connection, source_id: i64) -> DbResult<Option<(String, String, Option<i64>, String)>> {
+    pub fn get_source_info(conn: &Connection, source_id: i64) -> DbResult<Option<(String, String, Option<i64>, i64)>> {
         let mut stmt = conn.prepare(
             "SELECT root_path, status, last_scan_at, last_seen_at FROM sources WHERE id = ?1"
         )?;
@@ -184,7 +184,7 @@ impl Db {
                 row.get(0)?,
                 row.get(1)?,
                 row.get(2)?,
-                row.get::<_, Option<i64>>(3)?.unwrap_or_default(),
+                row.get(3)?,
             ))
         }).optional()?;
         Ok(result)
