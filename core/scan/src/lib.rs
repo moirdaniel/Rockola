@@ -61,6 +61,8 @@ impl Scanner {
                 code: "SOURCE_NOT_FOUND".into(),
                 message: format!("Source no existe: {root_path}"),
                 context: None,
+                timestamp: time::OffsetDateTime::now_utc().unix_timestamp(),
+                severity: "error".into(),
             }));
             return Ok(());
         }
@@ -75,6 +77,7 @@ impl Scanner {
             total: None,
             phase: "walking".into(),
             current_path: Some(root_path.into()),
+            progress_percent: None,
         }));
 
         // Obtener el número total de archivos para mostrar progreso
@@ -85,6 +88,7 @@ impl Scanner {
             total: Some(total_files),
             phase: "counting".into(),
             current_path: Some("Contando archivos...".into()),
+            progress_percent: Some(0.0),
         }));
 
         for entry in WalkDir::new(&root).follow_links(true).into_iter() {
@@ -100,6 +104,8 @@ impl Scanner {
                     sink.emit(AppEvent::Toast(core_events::Toast {
                         level: "warn".into(),
                         message: format!("Walk warning: {e}"),
+                        duration: None,
+                        action: None,
                     }));
                     continue;
                 }
@@ -173,6 +179,7 @@ impl Scanner {
                     total: Some(total_files),
                     phase: "walking".into(),
                     current_path: Some(rel_path.clone()),
+                    progress_percent: Some((processed as f64 / total_files as f64) * 100.0),
                 }));
                 
                 // Emitir delta solo con IDs relevantes
@@ -180,6 +187,8 @@ impl Scanner {
                     sink.emit(AppEvent::LibraryDelta(LibraryDelta {
                         reason: "upsert".into(),
                         item_ids: upserted_ids.clone(),
+                        affected_artists: vec![],
+                        timestamp: time::OffsetDateTime::now_utc().unix_timestamp(),
                     }));
                     upserted_ids.clear();
                 }
@@ -191,6 +200,8 @@ impl Scanner {
             sink.emit(AppEvent::LibraryDelta(LibraryDelta {
                 reason: "upsert".into(),
                 item_ids: upserted_ids,
+                affected_artists: vec![],
+                timestamp: time::OffsetDateTime::now_utc().unix_timestamp(),
             }));
         }
 
@@ -201,6 +212,8 @@ impl Scanner {
             sink.emit(AppEvent::LibraryDelta(LibraryDelta {
                 reason: "missing".into(),
                 item_ids: vec![],
+                affected_artists: vec![],
+                timestamp: time::OffsetDateTime::now_utc().unix_timestamp(),
             }));
         }
 
@@ -212,6 +225,7 @@ impl Scanner {
             total: Some(total_files),
             phase: "done".into(),
             current_path: None,
+            progress_percent: Some(100.0),
         }));
 
         Ok(())
