@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+  "core/domain",
+  "core/events",
+  "core/db",
+  "core/scan",
+  "core/player",
+  "apps/desktop/src-tauri"
+]
+
