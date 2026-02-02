@@ -2,6 +2,7 @@
 //! En Modo A: Tauri events. En Modo B: WS /events (mismo payload).
 
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
@@ -166,7 +167,7 @@ impl LibraryDelta {
             reason,
             item_ids,
             affected_artists,
-            timestamp: time::OffsetDateTime::now_utc().unix_timestamp(),
+            timestamp: OffsetDateTime::now_utc().unix_timestamp(),
         }
     }
 }
@@ -177,7 +178,7 @@ impl QueueDelta {
             reason,
             queue_item_ids,
             position: None,
-            timestamp: time::OffsetDateTime::now_utc().unix_timestamp(),
+            timestamp: OffsetDateTime::now_utc().unix_timestamp(),
         }
     }
 }
@@ -200,7 +201,7 @@ impl StatsUpdate {
             total_size,
             last_scan_time,
             update_reason,
-            timestamp: time::OffsetDateTime::now_utc().unix_timestamp(),
+            timestamp: OffsetDateTime::now_utc().unix_timestamp(),
         }
     }
 }

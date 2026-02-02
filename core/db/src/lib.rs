@@ -184,7 +184,7 @@ impl Db {
                 row.get(0)?,
                 row.get(1)?,
                 row.get(2)?,
-                row.get(3)?.unwrap_or_default(),
+                row.get::<_, Option<i64>>(3)?.unwrap_or_default(),
             ))
         }).optional()?;
         Ok(result)

@@ -4,12 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-walkdir = "2"
-thiserror = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
-time = "0.3"
+walkdir = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { workspace = true }
+time = { workspace = true }
 
 core-db = { path = "../db" }
 core-domain = { path = "../domain" }
 core-events = { path = "../events" }
-
