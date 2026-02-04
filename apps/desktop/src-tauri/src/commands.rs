@@ -1,10 +1,9 @@
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-
+use serde_json::Value; 
 use tauri::{AppHandle, Emitter, State};
-
 use crate::state::AppState;
+
 
 /// Agrega una source (ruta raíz) a la DB.
 /// UI manda: { rootPath: string }
@@ -113,25 +112,32 @@ pub fn start_scan(app: AppHandle, state: State<AppState>, source_id: i64) -> Res
                 "payload": {
                     "source_id": source_id,
                     "processed": 0,
-                    "total": None,
+                    "total": Value::Null,                 // <-- NULL JSON
                     "phase": "starting",
-                    "current_path": Some("Iniciando escaneo..."),
-                    "progress_percent": Some(0.0)
+                    "current_path": "Iniciando escaneo...", // <-- string directo
+                    "progress_percent": 0.0                 // <-- number directo
                 }
             }));
 
-            if let Err(e) = scanner.scan_source_with_cancel(source_id, &root_path, &EventSinkAdapter::new(app_handle), &cancelled) {
+
+            if let Err(e) = scanner.scan_source_with_cancel(
+                source_id,
+                &root_path,
+                &EventSinkAdapter::new(app_handle),
+                &cancelled
+            ) {
                 let _ = app_handle.emit("app_event", serde_json::json!({
                     "type": "error",
                     "payload": {
                         "code": "SCAN_ERROR",
                         "message": format!("Error durante el escaneo: {}", e),
-                        "context": None,
+                        "context": Value::Null,
                         "timestamp": time::OffsetDateTime::now_utc().unix_timestamp(),
                         "severity": "error"
                     }
                 }));
             }
+
         });
     } else {
         return Err("Source no encontrada".to_string());

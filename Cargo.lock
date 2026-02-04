@@ -565,6 +565,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "time",
 ]
 
 [[package]]
@@ -610,6 +611,13 @@ dependencies = [
 [[package]]
 name = "core-player"
 version = "0.1.0"
+dependencies = [
+ "core-events",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "time",
+]
 
 [[package]]
 name = "core-scan"
@@ -620,6 +628,7 @@ dependencies = [
  "core-events",
  "rusqlite",
  "thiserror 1.0.69",
+ "time",
  "walkdir",
 ]
 
@@ -767,17 +776,25 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "core-db",
+ "core-domain",
  "core-events",
+ "core-player",
  "core-scan",
  "mime_guess",
  "percent-encoding",
+ "rand 0.8.5",
+ "rusqlite",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
+ "thiserror 1.0.69",
+ "time",
  "tokio",
  "tower-http",
+ "unicode-normalization",
+ "walkdir",
 ]
 
 [[package]]

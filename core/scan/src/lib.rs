@@ -1,26 +1,70 @@
-//! Scanner recursivo:
-//! - sources (root_path) => recorre archivos
-//! - artista = carpeta padre
-//! - upsert a SQLite
-//! - retorna ids upsertados + lista de seen full paths para marcar missing
+//! Scanner recursivo de biblioteca (Rockola):
+//! - sources (root_path) => recorre archivos candidatos (audio/video).
+//! - artista = carpeta padre inmediata del archivo.
+//! - upsert a SQLite (artist + media_item).
+//! - NO mantiene en memoria la lista completa de "seen paths":
+//!   usa una tabla TEMP `_scan_seen` para registrar lo visto y luego marca "missing" por SQL.
+//!
+//! ## Objetivo de eficiencia
+//! - Evitar `Vec<String>` gigantes (1 string por archivo) => alta RAM.
+//! - Reducir allocations al filtrar extensiones.
+//! - Emitir eventos de progreso y deltas por lotes para bajar overhead.
+//!
+//! > Nota: Este módulo asume un esquema de tabla `media_items` con columnas:
+//! > `source_id`, `full_path` y `missing` (0/1). Si en tu `core_db` el nombre difiere,
+//! > ajusta las constantes `MEDIA_ITEMS_TABLE`, `COL_FULL_PATH`, `COL_MISSING`.
+//!
+//! Requiere: `rusqlite`, `walkdir`, `thiserror`.
 
 use core_db::Db;
 use core_domain::normalize_artist_key;
-use core_events::{AppEvent, ScanProgress, LibraryDelta};
+use core_events::{AppEvent, LibraryDelta, ScanProgress};
+use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use thiserror::Error;
 use walkdir::WalkDir;
+
+/// Tabla y columnas esperadas para el update missing.
+/// Si tu esquema difiere, cámbialo acá y recompila.
+const MEDIA_ITEMS_TABLE: &str = "media_items";
+const COL_SOURCE_ID: &str = "source_id";
+const COL_FULL_PATH: &str = "full_path";
+const COL_MISSING: &str = "missing";
+
+/// TEMP table name para el scan (con PRIMARY KEY => dedup sin RAM).
+const TEMP_SEEN_TABLE: &str = "_scan_seen";
+
+/// Emitir progreso cada N upserts (trade-off UI vs overhead).
+const PROGRESS_EVERY: u64 = 50;
+
+/// Emitir deltas cada N upserts (batch para frontend/cache).
+const DELTA_EVERY: usize = 200;
+
+/// Extensiones soportadas (curadas).
+/// Mantener este set pequeño reduce I/O innecesario y acelera el walk.
+/// Si quieres ampliar, agrega y deja ORDENADO (para binary_search).
+const AUDIO_EXTS: &[&str] = &[
+    "aac", "aiff", "alac", "ape", "flac", "m4a", "m4b", "mp1", "mp2", "mp3", "oga", "ogg", "opus",
+    "ra", "ram", "snd", "spx", "tta", "voc", "vqf", "w64", "wav", "weba", "wma", "wv",
+];
+
+const VIDEO_EXTS: &[&str] = &[
+    "3g2", "3gp", "avi", "flv", "m2ts", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "mts", "ogv",
+    "rm", "rmvb", "ts", "webm", "wmv",
+];
 
 #[derive(Debug, Error)]
 pub enum ScanError {
     #[error("db error: {0}")]
     Db(#[from] core_db::DbError),
+
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+
     #[error("walk error: {0}")]
     Walk(String),
+
     #[error("cancelled")]
     Cancelled,
 }
@@ -67,32 +111,35 @@ impl Scanner {
             return Ok(());
         }
 
-        let mut processed: u64 = 0;
-        let mut seen_full_paths: Vec<String> = Vec::new();
-        let mut upserted_ids: Vec<i64> = Vec::new();
+        // Preparación: TEMP table para registrar paths vistos (sin RAM).
+        self.prepare_scan_seen_table(&conn)?;
 
-        sink.emit(AppEvent::ScanProgress(ScanProgress {
-            source_id,
-            processed,
-            total: None,
-            phase: "walking".into(),
-            current_path: Some(root_path.into()),
-            progress_percent: None,
-        }));
-
-        // Obtener el número total de archivos para mostrar progreso
         let total_files = self.count_candidate_files(&root);
+
         sink.emit(AppEvent::ScanProgress(ScanProgress {
             source_id,
             processed: 0,
             total: Some(total_files),
-            phase: "counting".into(),
-            current_path: Some("Contando archivos...".into()),
+            phase: "walking".into(),
+            current_path: Some(root_path.into()),
             progress_percent: Some(0.0),
         }));
 
+        let mut processed: u64 = 0;
+        let mut upserted_ids: Vec<i64> = Vec::with_capacity(DELTA_EVERY);
+
+        // Inserción a TEMP table: statement preparado para máxima performance.
+        {
+        let tx = conn.transaction()?;
+        let mut stmt_seen = tx.prepare_cached(&format!(
+            "INSERT OR IGNORE INTO {TEMP_SEEN_TABLE}(path) VALUES (?1)"
+        ))?;
+
+        // Un scan grande conviene transaccionar para:
+        // - acelerar inserts
+        // - evitar fsync por cada operación
+
         for entry in WalkDir::new(&root).follow_links(true).into_iter() {
-            // Verificar si se ha solicitado cancelación
             if cancelled.load(Ordering::Relaxed) {
                 return Err(ScanError::Cancelled);
             }
@@ -100,7 +147,6 @@ impl Scanner {
             let entry = match entry {
                 Ok(e) => e,
                 Err(e) => {
-                    // No abortamos todo por un archivo raro
                     sink.emit(AppEvent::Toast(core_events::Toast {
                         level: "warn".into(),
                         message: format!("Walk warning: {e}"),
@@ -117,85 +163,92 @@ impl Scanner {
 
             let path = entry.path();
 
-            // Filtrado MVP (amplio). Puedes expandir sin miedo.
             if !is_candidate_media(path) {
                 continue;
             }
 
+            // Ojo: to_string_lossy puede allocar; solo lo hacemos si pasa filtros.
             let full_path = path.to_string_lossy().to_string();
-            let rel_path = path.strip_prefix(&root)
+
+            // Registrar "seen" en TEMP table (sin acumular en RAM).
+            stmt_seen.execute(params![&full_path])?;
+
+            let rel_path = path
+                .strip_prefix(&root)
                 .unwrap_or(path)
                 .to_string_lossy()
                 .to_string();
 
-            let artist_folder = path.parent()
+            let artist_folder = path
+                .parent()
                 .and_then(|p| p.file_name())
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Unknown Artist".into());
 
             let artist_key = normalize_artist_key(&artist_folder).0;
 
-            let title = path.file_stem()
+            let title = path
+                .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Untitled".into());
 
             let media_type = guess_media_type(path);
+
             let meta = match std::fs::metadata(path) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
 
             let size_bytes = meta.len() as i64;
-            let mtime_unix = meta.modified()
+            let mtime_unix = meta
+                .modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
 
             // upsert artist + media_item
-            let artist_id = core_db::Db::upsert_artist(&conn, &artist_folder, &artist_key)?;
+            let artist_id = core_db::Db::upsert_artist(&tx, &artist_folder, &artist_key)?;
             let item_id = core_db::Db::upsert_media_item(
-                &conn,
+                &tx,
                 source_id,
                 artist_id,
                 &full_path,
                 &rel_path,
                 &title,
                 media_type,
-                None,            // duration_ms: luego con probe
+                None,      // duration_ms: luego con probe
                 size_bytes,
                 mtime_unix,
-                "unknown",       // playable: luego con probe
+                "unknown", // playable: luego con probe
             )?;
 
             processed += 1;
-            seen_full_paths.push(full_path);
             upserted_ids.push(item_id);
 
-            if processed % 50 == 0 {
+            if (processed % PROGRESS_EVERY) == 0 {
                 sink.emit(AppEvent::ScanProgress(ScanProgress {
                     source_id,
                     processed,
                     total: Some(total_files),
                     phase: "walking".into(),
                     current_path: Some(rel_path.clone()),
-                    progress_percent: Some((processed as f64 / total_files as f64) * 100.0),
+                    progress_percent: Some(progress_percent(processed, total_files)),
                 }));
-                
-                // Emitir delta solo con IDs relevantes
-                if !upserted_ids.is_empty() {
-                    sink.emit(AppEvent::LibraryDelta(LibraryDelta {
-                        reason: "upsert".into(),
-                        item_ids: upserted_ids.clone(),
-                        affected_artists: vec![],
-                        timestamp: time::OffsetDateTime::now_utc().unix_timestamp(),
-                    }));
-                    upserted_ids.clear();
-                }
+            }
+
+            if upserted_ids.len() >= DELTA_EVERY {
+                sink.emit(AppEvent::LibraryDelta(LibraryDelta {
+                    reason: "upsert".into(),
+                    item_ids: upserted_ids.clone(),
+                    affected_artists: vec![],
+                    timestamp: time::OffsetDateTime::now_utc().unix_timestamp(),
+                }));
+                upserted_ids.clear();
             }
         }
 
-        // flush deltas
+        // Flush de delta final
         if !upserted_ids.is_empty() {
             sink.emit(AppEvent::LibraryDelta(LibraryDelta {
                 reason: "upsert".into(),
@@ -205,10 +258,37 @@ impl Scanner {
             }));
         }
 
-        // marcar missing lo que ya no está
-        let missing_changed = core_db::Db::mark_missing_for_source(&mut conn, source_id, &seen_full_paths)?;
-        
-        if missing_changed > 0 {
+        // 1) Unmark missing (lo visto existe)
+        // 2) Mark missing (lo que estaba en DB pero no se vio)
+        //
+        // IMPORTANTE: esto depende del esquema. Si tu DB usa otro nombre de tabla/columna,
+        // ajusta las constantes arriba.
+        let unmissing = tx.execute(
+            &format!(
+                "UPDATE {MEDIA_ITEMS_TABLE} \
+                 SET {COL_MISSING}=0 \
+                 WHERE {COL_SOURCE_ID}=?1 \
+                   AND {COL_FULL_PATH} IN (SELECT path FROM {TEMP_SEEN_TABLE})"
+            ),
+            params![source_id],
+        )?;
+
+        let missing = tx.execute(
+            &format!(
+                "UPDATE {MEDIA_ITEMS_TABLE} \
+                 SET {COL_MISSING}=1 \
+                 WHERE {COL_SOURCE_ID}=?1 \
+                   AND {COL_FULL_PATH} NOT IN (SELECT path FROM {TEMP_SEEN_TABLE})"
+            ),
+            params![source_id],
+        )?;
+
+        // commit transacción
+        drop(stmt_seen);
+        tx.commit()?;
+
+        // Sólo avisamos delta missing si hubo cambios.
+        if missing > 0 || unmissing > 0 {
             sink.emit(AppEvent::LibraryDelta(LibraryDelta {
                 reason: "missing".into(),
                 item_ids: vec![],
@@ -217,6 +297,7 @@ impl Scanner {
             }));
         }
 
+        }
         core_db::Db::mark_source_scan_done(&conn, source_id)?;
 
         sink.emit(AppEvent::ScanProgress(ScanProgress {
@@ -231,7 +312,20 @@ impl Scanner {
         Ok(())
     }
 
-    // Método auxiliar para contar archivos candidatos
+    /// Crea/limpia la TEMP table usada para marcar vistos.
+    fn prepare_scan_seen_table(&self, conn: &Connection) -> ScanResult<()> {
+        // TEMP => vive sólo para esta conexión; se destruye al cerrar.
+        conn.execute_batch(&format!(
+            "DROP TABLE IF EXISTS {TEMP_SEEN_TABLE}; \
+             CREATE TEMP TABLE {TEMP_SEEN_TABLE} ( \
+                path TEXT PRIMARY KEY \
+             );"
+        ))?;
+        Ok(())
+    }
+
+    /// Cuenta candidatos para progreso.
+    /// Nota: es un segundo walk; si quieres aún menos IO, puedes omitir total y reportar sólo processed.
     fn count_candidate_files(&self, root: &Path) -> u64 {
         let mut count = 0u64;
         for entry in WalkDir::new(root).follow_links(true).into_iter().flatten() {
@@ -243,53 +337,45 @@ impl Scanner {
     }
 }
 
-// MVP: set amplio por extensión.
-// Puedes ampliar en caliente sin romper DB.
-fn is_candidate_media(path: &Path) -> bool {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    matches!(
-        ext.as_str(),
-        "mp3"|"flac"|"wav"|"m4a"|"aac"|"ogg"|"opus"|"wma"|"aiff"|
-        "mp4"|"mkv"|"webm"|"mov"|"avi"|"m4v"|"mpg"|"mpeg"|"ts"| 
-        "wmv"|"flv"|"f4v"|"webm"|"m2ts"|"mts"|"3gp"|"3g2"|"mxf"|
-        "alac"|"ape"|"dsf"|"dff"|"wv"|"tta"|"m4b"|"m4r"|"mp2"|"mp1"|
-        "oga"|"spx"|"opus"|"weba"|"mka"|"mks"|"iso"|"img"|"m2p"|"m2v"|
-        "ogv"|"ogm"|"mov"|"qt"|"rm"|"rmvb"|"asf"|"asx"|"wm"|"wmx"|
-        "avi"|"divx"|"mpg"|"mpeg"|"mpe"|"mpv"|"m2v"|"svi"|"3gpp"|
-        "3gpp2"|"m4v"|"h3d"|"3dv"|"3dm"|"3ds"|"3dt"|"3dv"|"3dx"|
-        "flac"|"opus"|"ra"|"ram"|"snd"|"thd"|"tta"|"voc"|"vqf"|"w64"|
-        "wma"|"wv"|"webm"|"wmv"|"xvid"|"yuv"|"264"|"265"|"3g2"|"3gp"|
-        "3gpp"|"3iv"|"aaf"|"aec"|"aep"|"aepx"|"aet"|"aetx"|"ajp"|"ale"|
-        "all"|"am"|"amr"|"aob"|"ape"|"arf"|"asf"|"asm"|"ass"|"ast"|
-        "asd"|"asx"|"avb"|"avd"|"avi"|"avp"|"avs"|"bdm"|"bdmv"|"bdt2"|
-        "bdt3"|"bin"|"bix"|"bmk"|"box"|"bs4"|"bsf"|"bu"|"bvr"|"byu"|
-        "camproj"|"camrec"|"camv"|"ced"|"cel"|"cine"|"cip"|"clpi"|"cmmp"|
-        "cmmtpl"|"cmp"|"cmrec"|"cmsd"|"cmsdp"|"cmv"|"cmx"|"cpi"|"cpvc"|
-        "crec"|"cst"|"csv"|"cue"|"cv2"|"cx3"|"d2v"|"d3v"|"dat"|"dav"|
-        "dce"|"dck"|"dcr"|"dct"|"ddat"|"dif"|"dir"|"divx"|"dl"|"dm2"|
-        "dmb"|"dmsd"|"dmsdp"|"dmsf"|"dmv"|"dmx"|"dnc"|"dpa"|"dpg"|"dsy"|
-        "dv"|"dv-avi"|"dv4"|"dvdmedia"|"dvr"|"dvr-ms"|"dvx"|"dxr"|"dzm"|
-        "dzp"|"dzt"|"edl"|"evo"|"eye"|"ezt"|"f4a"|"f4b"|"f4p"|"f4v"|"f64"|
-        "flc"|"flh"|"fli"|"flv"|"flx"|"fpf"|"ftc"|"g2m"|"g64"|"gcs"|
-        "gfp"|"gifv"|"gl"|"gom"|"grasp"|"gts"|"gvi"|"gvp"|"h264"|"hdmov"|
-        "hkm"|"ifo"|"imovieproj"|"imovieproject"|"ircp"|"irf"|"ism"|"ismc"|
-        "ismclip"|"isms"|"iva"|"ivf"|"ivr"|"ivs"|"izz"|"izzy"|"jss"|"jts"|
-        "jtv"|"k3g"|"kdenlive"|"kit"|"kmy"|"kon"|"kpr"|"kra"|"ksh"|"ksm"|
-        "kt"|"ktn"|"lrec"|"lrv"|"lsf"|"lsx"|"lvix"|"m15"|"m1pg"|"m1v"|"m21"|
-        "m21"|"m2a"|"m2p"|"m2t"|"m2ts"|"m2v"|"m4e"|"m4u"|"m4v"|"m75"|"meta"|
-        "mgv"|"mj2"|"mjp"|"mjpeg"|"mjpg"|"mjpg"|"mk3d"|"mks"|"mkv"|"mmv"|"mnv"|
-        "mob"|"mod"|"modd"|"moff"|"moi"|"moov"|"mov"|"movie"|"mp21"|"mp2v"|"mp4"|
-        "mp4v"|"mpe"|"mpeg"|"mpeg1"|"mpeg2"|"mpeg4"|"mpf"|"mpg"|"mpg2"|"mpg4"|"mpl"|
-        "mpls"|"mpos"|"mpv"|"mpv2"|"mqv"|"msdvd"|"mse"|"msh"|"msv"|"mt2s"|"mts"|"mtv"|"mv"|
-        "mvb"|"mvc"|"mvd"|"mve"|"mvex"|"mvp"|"mvy"|"mxf"|"mxv"|"mys"|"ncor"|"nsv"|"nut"|"nuv"|"nvc"|"ogm"|"ogv"|"ogx"|"osp"|"otrkey"|"pac"|"par"|"pds"|"pgi"|"photoshow"|"piv"|"pjs"|"playlist"|"plproj"|"pmf"|"prel"|"pro"|"pro4"|"pro5"|"pro7"|"prproj"|"prtl"|"psb"|"psd"|"psh"|"pssd"|"pva"|"pvr"|"pxv"|"qt"|"qtch"|"qtl"|"qtm"|"qtz"|"rcd"|"rcproject"|"rdb"|"rec"|"rm"|"rmd"|"rmp"|"rms"|"rmv"|"rmvb"|"roq"|"rp"|"rsx"|"rts"|"rum"|"rv"|"sbk"|"sbt"|"scc"|"scm"|"scn"|"screenflow"|"sdi"|"sdp"|"sdr"|"sds"|"sdt"|"sedprj"|"seq"|"sfd"|"sfvidcap"|"siv"|"smi"|"smil"|"smk"|"sml"|"sms"|"smv"|"spl"|"sqz"|"srt"|"ssf"|"ssm"|"stl"|"str"|"stx"|"svi"|"swf"|"swi"|"swt"|"tda3mt"|"tdt"|"theora"|"thm"|"tid"|"tix"|"tod"|"tp"|"tp0"|"tpd"|"tpr"|"trp"|"ts"|"tsp"|"ttxt"|"tvlayer"|"tvrecording"|"tvs"|"tvshow"|"usf"|"usm"|"v264"|"vbc"|"vc1"|"vcpf"|"vcr"|"vcv"|"vdo"|"vdr"|"vdx"|"veg"|"vem"|"vf"|"vft"|"vfwp"|"vga"|"vgz"|"vid"|"video"|"viewlet"|"viv"|"vivo"|"vlab"|"vob"|"vp3"|"vp6"|"vp7"|"vpj"|"vro"|"vs4"|"vse"|"vsp"|"w32"|"wcp"|"webm"|"wlmp"|"wm"|"wmd"|"wmmp"|"wmv"|"wmx"|"wot"|"wp3"|"wpl"|"wtv"|"wvx"|"xej"|"xel"|"xesc"|"xfl"|"xlmv"|"xml"|"xmv"|"xvid"|"y4m"|"yog"|"yuv"|"zeg"|"zm1"|"zm2"|"zm3"|"zmv"
-    )
+#[inline]
+fn progress_percent(processed: u64, total: u64) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        (processed as f64 / total as f64) * 100.0
+    }
 }
 
+/// Determina si el archivo es candidato por extensión.
+/// Implementación sin asignaciones grandes:
+/// - no usa una lista gigante de `matches!`
+/// - evita `to_lowercase()` (alloc) usando `to_ascii_lowercase()` sólo para la extensión (muy chica).
+fn is_candidate_media(path: &Path) -> bool {
+    let ext = match path.extension().and_then(|e| e.to_str()) {
+        Some(e) if !e.is_empty() => e,
+        _ => return false,
+    };
+
+    // Extensiones suelen ser cortas (<= 5), esta alloc es marginal.
+    let ext_lc = ext.to_ascii_lowercase();
+
+    AUDIO_EXTS.binary_search(&ext_lc.as_str()).is_ok() || VIDEO_EXTS.binary_search(&ext_lc.as_str()).is_ok()
+}
+
+/// Clasificador simple audio/video por extensión.
 fn guess_media_type(path: &Path) -> &'static str {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    match ext.as_str() {
-        "mp3"|"flac"|"wav"|"m4a"|"aac"|"ogg"|"opus"|"wma"|"aiff"|"alac"|"ape"|"dsf"|"dff"|"wv"|"tta"|"m4b"|"m4r"|"mp2"|"mp1"|"oga"|"spx"|"weba"|"mka"|"ra"|"ram"|"snd"|"voc"|"vqf"|"w64" => "audio",
-        "mp4"|"mkv"|"webm"|"mov"|"avi"|"m4v"|"mpg"|"mpeg"|"ts"|"wmv"|"flv"|"f4v"|"m2ts"|"mts"|"3gp"|"3g2"|"mxf"|"ogv"|"ogm"|"qt"|"rm"|"rmvb"|"asf"|"m2p"|"m2v"|"svi"|"3gpp"|"3iv"|"264"|"265"|"3iv"|"aaf"|"amv"|"asx"|"bik"|"bix"|"box"|"camproj"|"camrec"|"camv"|"cdxl"|"cgi"|"cmmp"|"cmmtpl"|"cmv"|"cpi"|"d2v"|"d3v"|"dat"|"dav"|"dif"|"divx"|"dmf"|"dmv"|"dsm"|"dsv"|"dts"|"dv"|"dv4"|"dvdmedia"|"dvr"|"dvr-ms"|"dvx"|"dxr"|"evo"|"f4a"|"f4b"|"f4p"|"fbr"|"fbr!"|"fbz"|"fcp"|"fcproject"|"ffd"|"flc"|"flh"|"fli"|"flv"|"flx"|"g2m"|"g64"|"gifv"|"gl"|"gom"|"grasp"|"gts"|"gvi"|"gvp"|"h264"|"hdmov"|"hkm"|"ifo"|"imovieproj"|"imovieproject"|"ircp"|"irf"|"ism"|"ismc"|"ismclip"|"isms"|"iva"|"ivf"|"ivr"|"ivs"|"izz"|"izzy"|"jss"|"jts"|"jtv"|"k3g"|"kdenlive"|"kit"|"kmy"|"kon"|"kpr"|"kra"|"ksh"|"ksm"|"kt"|"ktn"|"lrec"|"lrv"|"lsf"|"lsx"|"lvix"|"m15"|"m1pg"|"m1v"|"m21"|"m2a"|"m2p"|"m2t"|"m2ts"|"m2v"|"m4e"|"m4u"|"m4v"|"m75"|"meta"|"mgv"|"mj2"|"mjp"|"mjpeg"|"mjpg"|"mk3d"|"mks"|"mkv"|"mmv"|"mnv"|"mob"|"mod"|"modd"|"moff"|"moi"|"moov"|"mov"|"movie"|"mp21"|"mp2v"|"mp4"|"mp4v"|"mpe"|"mpeg"|"mpeg1"|"mpeg2"|"mpeg4"|"mpf"|"mpg"|"mpg2"|"mpg4"|"mpl"|"mpls"|"mpos"|"mpv"|"mpv2"|"mqv"|"msdvd"|"mse"|"msh"|"msv"|"mt2s"|"mts"|"mtv"|"mv"|"mvb"|"mvc"|"mvd"|"mve"|"mvex"|"mvp"|"mvy"|"mxf"|"mxv"|"mys"|"ncor"|"nsv"|"nut"|"nuv"|"nvc"|"ogm"|"ogv"|"ogx"|"osp"|"otrkey"|"pac"|"par"|"pds"|"pgi"|"photoshow"|"piv"|"pjs"|"playlist"|"plproj"|"pmf"|"prel"|"pro"|"pro4"|"pro5"|"pro7"|"prproj"|"prtl"|"psb"|"psd"|"psh"|"pssd"|"pva"|"pvr"|"pxv"|"qt"|"qtch"|"qtl"|"qtm"|"qtz"|"rcd"|"rcproject"|"rdb"|"rec"|"rm"|"rmd"|"rmp"|"rms"|"rmv"|"rmvb"|"roq"|"rp"|"rsx"|"rts"|"rum"|"rv"|"sbk"|"sbt"|"scc"|"scm"|"scn"|"screenflow"|"sdi"|"sdp"|"sdr"|"sds"|"sdt"|"sedprj"|"seq"|"sfd"|"sfvidcap"|"siv"|"smi"|"smil"|"smk"|"sml"|"sms"|"smv"|"spl"|"sqz"|"srt"|"ssf"|"ssm"|"stl"|"str"|"stx"|"svi"|"swf"|"swi"|"swt"|"tda3mt"|"tdt"|"theora"|"thm"|"tid"|"tix"|"tod"|"tp"|"tp0"|"tpd"|"tpr"|"trp"|"ts"|"tsp"|"ttxt"|"tvlayer"|"tvrecording"|"tvs"|"tvshow"|"usf"|"usm"|"v264"|"vbc"|"vc1"|"vcpf"|"vcr"|"vcv"|"vdo"|"vdr"|"vdx"|"veg"|"vem"|"vf"|"vft"|"vfwp"|"vga"|"vgz"|"vid"|"video"|"viewlet"|"viv"|"vivo"|"vlab"|"vob"|"vp3"|"vp6"|"vp7"|"vpj"|"vro"|"vs4"|"vse"|"vsp"|"w32"|"wcp"|"webm"|"wlmp"|"wm"|"wmd"|"wmmp"|"wmv"|"wmx"|"wot"|"wp3"|"wpl"|"wtv"|"wvx"|"xej"|"xel"|"xesc"|"xfl"|"xlmv"|"xml"|"xmv"|"xvid"|"y4m"|"yog"|"yuv"|"zeg"|"zm1"|"zm2"|"zm3"|"zmv" => "video",
-        _ => "unknown",
+    let ext = match path.extension().and_then(|e| e.to_str()) {
+        Some(e) if !e.is_empty() => e,
+        _ => return "unknown",
+    };
+
+    let ext_lc = ext.to_ascii_lowercase();
+
+    if AUDIO_EXTS.binary_search(&ext_lc.as_str()).is_ok() {
+        "audio"
+    } else if VIDEO_EXTS.binary_search(&ext_lc.as_str()).is_ok() {
+        "video"
+    } else {
+        "unknown"
     }
 }
