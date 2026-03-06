@@ -99,3 +99,32 @@ Requisitos: [Tauri - Prerequisites](https://v2.tauri.app/start/prerequisites/). 
 - [ ] Playlists completas y favoritos
 - [ ] PWA y soporte offline
 - [ ] Tests E2E y unitarios
+
+## Subir a GitHub
+
+El proyecto ya está inicializado con git (rama `main`, primer commit hecho). **No tengo acceso a tu cuenta de GitHub**, así que debes crear el repositorio y enlazarlo tú:
+
+1. **Crea el repositorio en GitHub** (vacío, sin README):
+   - Ve a [github.com/new](https://github.com/new)
+   - Nombre sugerido: `rockola-web`
+   - No marques "Add a README" (ya existe en el proyecto)
+
+2. **Enlaza y sube** desde la raíz del proyecto (sustituye `TU_USUARIO` por tu usuario de GitHub):
+
+   ```bash
+   git remote add origin https://github.com/TU_USUARIO/rockola-web.git
+   git push -u origin main
+   ```
+
+   Si usas SSH:
+
+   ```bash
+   git remote add origin git@github.com:TU_USUARIO/rockola-web.git
+   git push -u origin main
+   ```
+
+Opcional: instala [GitHub CLI](https://cli.github.com/) (`gh`) y autentícate; luego puedes crear el repo y hacer push con:
+
+   ```bash
+   gh repo create rockola-web --private --source=. --remote=origin --push
+   ```
