@@ -1,0 +1,32 @@
+# Build
+FROM rust:1.75-bookworm AS builder
+WORKDIR /app
+ENV TZ=America/Santiago
+
+# Dependencias del sistema
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock* ./
+COPY src ./src
+COPY migrations ./migrations
+
+# Build release (sin Cargo.lock en primera compilación, puede generar uno después)
+RUN cargo build --release 2>/dev/null || cargo build --release
+
+# Run
+FROM debian:bookworm-slim
+ENV TZ=America/Santiago
+RUN apt-get update && apt-get install -y ca-certificates tzdata libssl3 && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /app/target/release/rockola-backend /app/rockola-backend
+COPY migrations /app/migrations
+
+ENV DATABASE_URL=sqlite:/app/data/rockola.db
+ENV RUST_LOG=info
+ENV PORT=3000
+ENV COST_PER_SONG=100
+
+RUN mkdir -p /app/data
+EXPOSE 3000
+CMD ["./rockola-backend"]

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Rockola Digital",
+  "version": "0.1.0",
+  "identifier": "digital.rockola.app",
+  "build": {
+    "beforeDevCommand": "npm run dev:tauri",
+    "devUrl": "http://localhost:5174",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Rockola Digital",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "fullscreen": false,
+        "resizable": true,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [],
+    "copyright": "",
+    "category": "Music",
+    "shortDescription": "Jukebox digital para escritorio",
+    "longDescription": "Rockola Digital: búsqueda, cola y reproducción. Modo kiosko para PCs antiguos."
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    },
+    "updater": {
+      "pubkey": "REPLACE_WITH_PUBLIC_KEY_CONTENT",
+      "endpoints": [
+        "https://github.com/USER/REPO/releases/latest/download/latest.json"
+      ],
+      "dialog": false
+    }
+  }
+}
