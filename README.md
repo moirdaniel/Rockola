@@ -1,52 +1,72 @@
 # Rockola Digital
 
-Rockola (jukebox) digital: actualmente **demo web** (búsqueda unificada, cola, créditos). En camino: **app de escritorio** con **modo kiosko** para reciclar PCs antiguos como rockola dedicada (ver [docs/desktop-kiosk.md](docs/desktop-kiosk.md)).
+Jukebox digital para reproducir **audio y video** con búsqueda unificada, cola de reproducción y sistema de créditos. Incluye **app web**, **app de escritorio (Tauri)** con modo kiosko y **actualizaciones automáticas** para despliegues en PCs reciclados.
+
+---
+
+## Funcionalidades
+
+- **Búsqueda unificada** — Índice local (SQLite) + YouTube vía [yt-dlp](https://github.com/yt-dlp/yt-dlp); resultados en un solo listado.
+- **Cola de reproducción** — FIFO persistida; reproducción automática de audio y video.
+- **Créditos** — Saldo por usuario; costo por canción configurable; validación en backend.
+- **Panel mantenedor** — Vista admin: cola, biblioteca, descargas, reset de datos, registro de auditoría; opcionalmente protegido por PIN.
+- **App de escritorio (Tauri 2)** — Ventana nativa, modo kiosko (pantalla completa, sin decoraciones), ideal para rockola dedicada.
+- **Actualizaciones firmadas** — Solo admin puede buscar/descargar/instalar actualizaciones; modo recuperación ante fallos de actualización.
+
+---
 
 ## Stack
 
-- **Frontend**: React 18, TypeScript, Vite, TailwindCSS, Zustand, React Query, React Router
-- **Backend**: Rust, Axum, Tokio, SQLx, SQLite
+| Capa     | Tecnología |
+|----------|------------|
+| Frontend | React 18, TypeScript, Vite, TailwindCSS, Zustand, React Query, React Router |
+| Escritorio | Tauri 2, plugin updater, plugin process |
+| Backend  | Rust, Axum, Tokio, SQLx |
+| Base de datos | SQLite |
+| Media    | yt-dlp, ffmpeg |
+
+---
 
 ## Inicio rápido
 
-**Requisito:** Para que la búsqueda en YouTube funcione, instala [yt-dlp](https://github.com/yt-dlp/yt-dlp) (en Arch: `sudo pacman -S yt-dlp ffmpeg`).
+**Requisito:** Para búsqueda en YouTube instala **yt-dlp** (y ffmpeg para audio). En Arch: `sudo pacman -S yt-dlp ffmpeg`.
 
-**Levantar todo (una sola terminal):** desde la raíz del repo ejecuta `./start.sh`. Se inicia el backend (puerto 3000) y luego el frontend (puerto 5173). Ctrl+C cierra ambos.
+### Una sola terminal
 
-**O en dos terminales:**
+Desde la raíz del repo:
 
-1. **Arranca el backend** (terminal 1):
-   ```bash
-   cd backend
-   cp .env.example .env   # si aún no existe
-   mkdir -p data
-   ./run.sh
-   ```
-   (`./run.sh` recompila y ejecuta el backend desde esta carpeta; así la ruta **GET /api/maintenance** estará disponible para la vista Mantenedores. Si prefieres: `cargo run`.)
-   Debe quedar escuchando en `http://localhost:3000`.
+```bash
+./start.sh
+```
 
-2. **Arranca el frontend** (terminal 2):
-   ```bash
-   cd frontend
-   npm install
-   npm run dev
-   ```
-   Abre **http://localhost:5173**. El proxy de Vite redirige `/api` al backend en el puerto 3000.
+Se inicia el backend (puerto 3000) y el frontend (puerto 5173). Abre **http://localhost:5173**. Ctrl+C cierra ambos.
 
-3. **Vista Mantenedores**: Admin → **Vista mantenedores** (o `/mantenedores`). Si ves **"Not Found"**:
-   - Cierra el proceso del backend (Ctrl+C) y desde la carpeta **backend** ejecuta **`./run.sh`** (o `cargo run`). La ruta **GET /api/maintenance** debe estar disponible.
-   - Si al arrancar el backend sale **"Address already in use"**, hay otro proceso en el puerto 3000 (por ejemplo un backend antiguo). Ciérralo con `pkill -f rockola-backend` o desde la terminal donde corre, y vuelve a ejecutar `./run.sh`.
+### Dos terminales
 
-Documentación en `/docs`:
+**Terminal 1 — Backend:**
 
-- [Arquitectura](docs/arquitectura.md)
-- [yt-dlp](docs/yt-dlp.md)
-- [Ejecución local](docs/run-local.md)
-- [API](docs/api.md)
-- [Guía de funciones](docs/funciones.md)
-- [Escritorio y modo kiosko](docs/desktop-kiosk.md) (plan para PCs antiguos)
+```bash
+cd backend
+cp .env.example .env   # si aún no existe
+mkdir -p data
+./run.sh
+```
 
-**Copia de la demo web:** en `backups/` hay un snapshot (`.tar.gz`) de la versión solo-web para no perderla al pasar a escritorio; ver `backups/README.md`.
+Debe quedar en `http://localhost:3000`.
+
+**Terminal 2 — Frontend:**
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Abre **http://localhost:5173**. El proxy de Vite redirige `/api` al backend.
+
+**Vista Mantenedores:** Admin → **Vista mantenedores** (o `/mantenedores`). Si ves "Not Found", arranca el backend con `./run.sh` desde `backend/` para que exista `GET /api/maintenance`. Si el puerto 3000 está ocupado: `pkill -f rockola-backend` y vuelve a ejecutar `./run.sh`.
+
+---
 
 ## Docker
 
@@ -54,19 +74,27 @@ Documentación en `/docs`:
 cd docker && docker compose up --build
 ```
 
-App en http://localhost:8080 (timezone America/Santiago). La vista Mantenedores funciona si la imagen del backend se ha construido con el código actual (`docker compose build backend`).
+App en **http://localhost:8080** (timezone America/Santiago).
 
-## Estructura
+---
 
+## App de escritorio (Tauri)
+
+Con el backend en marcha en otro terminal (`cd backend && ./run.sh`):
+
+```bash
+cd frontend
+npm run tauri dev    # desarrollo (abre ventana)
+npm run tauri build  # ejecutable e instaladores en src-tauri/target/release/bundle/
 ```
-rockola-web/
-├── frontend/       # SPA React + Tauri (app escritorio)
-│   ├── src-tauri/  # Rust Tauri 2 (ventana, build, iconos)
-├── backend/        # API Rust
-├── docker/         # Dockerfiles y compose
-├── docs/           # Documentación
-└── backups/        # Copia demo web
-```
+
+Requisitos: [Tauri — Prerequisites](https://v2.tauri.app/start/prerequisites/).
+
+- **Modo kiosko:** fullscreen, sin barra de título; ideal para PCs antiguos como rockola dedicada.
+- **Actualizaciones:** configuración en Mantenedores → Actualizaciones; ver [docs/updates.md](docs/updates.md).
+- Detalles: [docs/desktop-kiosk.md](docs/desktop-kiosk.md).
+
+---
 
 ## Tests
 
@@ -78,53 +106,53 @@ cd backend && cargo test
 cd frontend && npm run test
 ```
 
-## App de escritorio (Tauri)
+---
 
-Con el backend en marcha en otro terminal (`cd backend && ./run.sh`):
+## Estructura del proyecto
 
-```bash
-cd frontend
-npm run tauri dev    # desarrollo (abre ventana)
-npm run tauri build # ejecutable e instaladores en src-tauri/target/release/bundle/
+```
+rockola-web/
+├── frontend/           # SPA React + Tauri
+│   ├── src/            # Componentes, páginas, stores, servicios
+│   └── src-tauri/      # Rust Tauri 2 (ventana, build, actualizaciones)
+├── backend/            # API Rust (Axum, SQLite)
+├── docker/             # Dockerfiles y docker-compose
+└── docs/               # Documentación
 ```
 
-Requisitos: [Tauri - Prerequisites](https://v2.tauri.app/start/prerequisites/). Detalles en [docs/desktop-kiosk.md](docs/desktop-kiosk.md).
+---
 
-## TODOs siguientes fases
+## Documentación
 
-- [ ] **Modo kiosko** en Tauri (fullscreen, sin decoraciones) y opcional arranque del backend desde la app — ver [docs/desktop-kiosk.md](docs/desktop-kiosk.md)
-- [ ] Reemplazar adapters mock por YouTube API y Spotify API reales
+| Documento | Contenido |
+|-----------|-----------|
+| [Arquitectura](docs/arquitectura.md) | Visión general, stack, flujos, BD, estado global |
+| [API](docs/api.md) | Endpoints del backend |
+| [Guía de funciones](docs/funciones.md) | Qué hace cada módulo/función principal |
+| [yt-dlp](docs/yt-dlp.md) | Búsqueda y descargas con yt-dlp |
+| [Ejecución local](docs/run-local.md) | Desarrollo local paso a paso |
+| [Escritorio y modo kiosko](docs/desktop-kiosk.md) | Tauri, fullscreen, despliegue en PC |
+| [Actualizaciones](docs/updates.md) | Actualizaciones firmadas, canales, modo recuperación |
+| [Panel mantenedor](docs/admin-panel.md) | Admin, PIN, sesión, auditoría |
+| [Storage](docs/storage-layout.md) | Layout de datos y medios |
+
+---
+
+## Próximas fases
+
+- [ ] Reemplazar adapters mock por YouTube API / Spotify API reales
 - [ ] Proxy de stream en backend para fuentes externas
 - [ ] Autenticación y múltiples usuarios
-- [ ] Playlists completas y favoritos
+- [ ] Playlists y favoritos
 - [ ] PWA y soporte offline
-- [ ] Tests E2E y unitarios
+- [ ] Tests E2E
 
-## Subir a GitHub
+---
 
-El proyecto ya está inicializado con git (rama `main`, primer commit hecho). **No tengo acceso a tu cuenta de GitHub**, así que debes crear el repositorio y enlazarlo tú:
+## Repositorio
 
-1. **Crea el repositorio en GitHub** (vacío, sin README):
-   - Ve a [github.com/new](https://github.com/new)
-   - Nombre sugerido: `rockola-web`
-   - No marques "Add a README" (ya existe en el proyecto)
+Código en **[GitHub — moirdaniel/Rockola](https://github.com/moirdaniel/Rockola)**.
 
-2. **Enlaza y sube** desde la raíz del proyecto (sustituye `TU_USUARIO` por tu usuario de GitHub):
+---
 
-   ```bash
-   git remote add origin https://github.com/TU_USUARIO/rockola-web.git
-   git push -u origin main
-   ```
-
-   Si usas SSH:
-
-   ```bash
-   git remote add origin git@github.com:TU_USUARIO/rockola-web.git
-   git push -u origin main
-   ```
-
-Opcional: instala [GitHub CLI](https://cli.github.com/) (`gh`) y autentícate; luego puedes crear el repo y hacer push con:
-
-   ```bash
-   gh repo create rockola-web --private --source=. --remote=origin --push
-   ```
+**Autor:** Daniel Moir · Proyecto personal / experimental
