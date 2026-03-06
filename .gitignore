@@ -23,6 +23,9 @@ backend/data/*.db-journal
 # Media descargado (yt-dlp)
 rockola-media/
 
+# Backups (archivos grandes, no versionar)
+backups/
+
 # IDE y OS
 .idea/
 .vscode/
